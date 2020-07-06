@@ -28,7 +28,28 @@
 #import <IOKit/IOTypes.h>
 #import <termios.h>
 
-//#define LOG_SERIAL_PORT_ERRORS 
+// Keep older versions of the compiler happy
+#ifndef NS_ASSUME_NONNULL_BEGIN
+#define NS_ASSUME_NONNULL_BEGIN
+#define NS_ASSUME_NONNULL_END
+#define nullable
+#define nonnullable
+#define __nullable
+#endif
+
+#ifndef NS_DESIGNATED_INITIALIZER
+#define NS_DESIGNATED_INITIALIZER
+#endif
+
+#ifndef ORSArrayOf
+	#if __has_feature(objc_generics)
+		#define ORSArrayOf(TYPE) NSArray<TYPE>
+	#else
+		#define ORSArrayOf(TYPE) NSArray
+	#endif
+#endif // #ifndef ORSArrayOf
+
+//#define LOG_SERIAL_PORT_ERRORS
 typedef NS_ENUM(NSUInteger, ORSSerialPortParity) {
 	ORSSerialPortParityNone = 0,
 	ORSSerialPortParityOdd,
@@ -38,6 +59,9 @@ typedef NS_ENUM(NSUInteger, ORSSerialPortParity) {
 @protocol ORSSerialPortDelegate;
 
 @class ORSSerialRequest;
+@class ORSSerialPacketDescriptor;
+
+NS_ASSUME_NONNULL_BEGIN
 
 /**
  *  The ORSSerialPort class represents a serial port, and includes methods to
@@ -99,7 +123,6 @@ typedef NS_ENUM(NSUInteger, ORSSerialPortParity) {
  *  		[self.receivedDataTextView setNeedsDisplay:YES];
  *  	}
  */
-
 @interface ORSSerialPort : NSObject
 
 /** ---------------------------------------------------------------------------------------
@@ -120,7 +143,7 @@ typedef NS_ENUM(NSUInteger, ORSSerialPortParity) {
  *  @see -[ORSSerialPortManager availablePorts]
  *  @see -initWithPath:
  */
-+ (ORSSerialPort *)serialPortWithPath:(NSString *)devicePath;
++ (nullable ORSSerialPort *)serialPortWithPath:(NSString *)devicePath;
 
 /**
  *  Returns an `ORSSerialPort` instance for the serial port represented by `device`.
@@ -138,7 +161,7 @@ typedef NS_ENUM(NSUInteger, ORSSerialPortParity) {
  *  @see -[ORSSerialPortManager availablePorts]
  *  @see +serialPortWithPath:
  */
-+ (ORSSerialPort *)serialPortWithDevice:(io_object_t)device;
++ (nullable ORSSerialPort *)serialPortWithDevice:(io_object_t)device;
 
 /**
  *  Returns an `ORSSerialPort` instance representing the serial port at `devicePath`.
@@ -153,7 +176,7 @@ typedef NS_ENUM(NSUInteger, ORSSerialPortParity) {
  *  @see -[ORSSerialPortManager availablePorts]
  *  @see +serialPortWithPath:
  */
-- (instancetype)initWithPath:(NSString *)devicePath;
+- (nullable instancetype)initWithPath:(NSString *)devicePath;
 
 /**
  *  Returns an `ORSSerialPort` instance for the serial port represented by `device`.
@@ -171,7 +194,7 @@ typedef NS_ENUM(NSUInteger, ORSSerialPortParity) {
  *  @see -[ORSSerialPortManager availablePorts]
  *  @see -initWithPath:
  */
-- (instancetype)initWithDevice:(io_object_t)device NS_DESIGNATED_INITIALIZER;
+- (nullable instancetype)initWithDevice:(io_object_t)device;
 
 /** ---------------------------------------------------------------------------------------
  * @name Opening and Closing
@@ -253,6 +276,63 @@ typedef NS_ENUM(NSUInteger, ORSSerialPortParity) {
  */
 - (BOOL)sendRequest:(ORSSerialRequest *)request;
 
+/**
+ *  Requests the cancellation of a queued (not yet sent) request. The request
+ *  is removed from the requests queue and will not be sent.
+ *
+ *  Note that a pending request cannot be cancelled, as it has already been sent and is
+ *  awaiting a response. If a pending request is passed in, this method will simply
+ *  do nothing. Because the requests queue is handled in the background, occasionally
+ *  a request may leave the queue and becoming pending after this method is called, 
+ *  causing cancellation to fail. If you need to absolutely guarantee that a request
+ *  is not sent you should avoid sending it rather than depending on later cancellation.
+ *
+ *  @param request The pending request to be cancelled.
+ */
+- (void)cancelQueuedRequest:(ORSSerialRequest *)request;
+
+/**
+ *  Cancels all queued requests. The requests queue is emptied.
+ *
+ *  Note that if there is a pending request, it is not cancelled, as it has already
+ *  been sent and is awaiting a response.
+ */
+- (void)cancelAllQueuedRequests;
+
+/** ---------------------------------------------------------------------------------------
+ * @name Listening For Packets
+ *  ---------------------------------------------------------------------------------------
+ */
+
+/**
+ *  Tells the receiver to begin listening for incoming packets matching the specified
+ *  descriptor.
+ *
+ *  When incoming data that constitutes a packet as described by descriptor is received,
+ *  the delegate method -serialPort:didReceivePacket:matchingDescriptor: will be called.
+ *
+ *  @param descriptor An ORSerialPacketDescriptor instance describing the packets the receiver
+ *  should listen for.
+ *
+ *  @see -stopListeningForPacketsMatchingDescriptor:
+ *  @see -serialPort:didReceivePacket:matchingDescriptor:
+ */
+- (void)startListeningForPacketsMatchingDescriptor:(ORSSerialPacketDescriptor *)descriptor;
+
+/**
+ *  Tells the receiver to stop listening for incoming packets matching the specified
+ *  descriptor. 
+ *
+ *  @note The passed in descriptor must be the exact same instance as was previously
+ *  provided to -startListeningForPacketsMatchingDescriptor:
+ *
+ *  @param descriptor An ORSSerialPacketDescriptor instance previously passed to
+ *  -startListeningForPacketsMatchingDescriptor:
+ *
+ *  @see -startListeningForPacketsMatchingDescriptor:
+ */
+- (void)stopListeningForPacketsMatchingDescriptor:(ORSSerialPacketDescriptor *)descriptor;
+
 /** ---------------------------------------------------------------------------------------
  * @name Delegate
  *  ---------------------------------------------------------------------------------------
@@ -262,7 +342,7 @@ typedef NS_ENUM(NSUInteger, ORSSerialPortParity) {
  *  The delegate for the serial port object. Must implement the `ORSSerialPortDelegate` protocol.
  *
  */
-@property (nonatomic, unsafe_unretained) id<ORSSerialPortDelegate> delegate;
+@property (nonatomic, weak, nullable) id<ORSSerialPortDelegate> delegate;
 
 /** ---------------------------------------------------------------------------------------
  * @name Request/Response Properties
@@ -272,8 +352,34 @@ typedef NS_ENUM(NSUInteger, ORSSerialPortParity) {
 /**
  *  The previously-sent request for which the port is awaiting a response, or nil
  *  if there is no pending request.
+ *
+ *	This property can be observed using Key Value Observing.
  */
-@property (nonatomic, strong, readonly) ORSSerialRequest *pendingRequest;
+@property (strong, readonly, nullable) ORSSerialRequest *pendingRequest;
+
+/**
+ *  Requests in the queue waiting to be sent, or an empty array if there are no queued requests.
+ *  Requests are sent from the queue in FIFO order. That is, the first request in the array
+ *  returned by this property is the next request to be sent.
+ *
+ *	This property can be observed using Key Value Observing.
+ *
+ *  @note This array does not contain the pending request, a sent request for which
+ *  the port is awaiting a response.
+ */
+@property (strong, readonly) ORSArrayOf(ORSSerialRequest *) *queuedRequests;
+
+/** ---------------------------------------------------------------------------------------
+ * @name Packet Parsing Properties
+ *  ---------------------------------------------------------------------------------------
+ */
+
+/**
+ *  An array of packet descriptors for which the port is listening. 
+ *
+ *  Returns an empty array if no packet descriptors are installed.
+ */
+@property (nonatomic, strong, readonly) ORSArrayOf(ORSSerialPacketDescriptor *) *packetDescriptors;
 
 /** ---------------------------------------------------------------------------------------
  * @name Port Properties
@@ -310,7 +416,8 @@ typedef NS_ENUM(NSUInteger, ORSSerialPortParity) {
 /**
  *  The baud rate for the port.
  *
- *  This value should be one of the values defined in termios.h:
+ *  Unless allowsNonStandardBaudRates is YES, 
+ *  this value should be one of the values defined in termios.h:
  *
  *	- 0
  *	- 50
@@ -335,15 +442,35 @@ typedef NS_ENUM(NSUInteger, ORSSerialPortParity) {
  *	- 76800
  *	- 115200
  *	- 230400
- *	- 19200
- *	- 38400
  */
 @property (nonatomic, copy) NSNumber *baudRate;
+
+/**
+ *  Whether or not the port allows setting non-standard baud rates.
+ *  Set this property to YES to allow setting non-standard baud rates
+ *  for the port. The default is NO.
+ *
+ *  @note Support for non-standard baud rates
+ *  depends on the serial hardware and driver being used. Even
+ *  for hardware/drivers that support non-standard baud rates,
+ *  it may be that not all baud rates are supported.
+ *  ORSSerialPort may *not* report an error when setting
+ *  a non-standard baud rate, nor will the baudRate getter return
+ *  the actual baud rate when non-standard baud rates are
+ *  used. This option should only be used when necessary,
+ *  and should be used with caution.
+ */
+@property (nonatomic) BOOL allowsNonStandardBaudRates;
 
 /**
  *  The number of stop bits. Values other than 1 or 2 are invalid.
  */
 @property (nonatomic) NSUInteger numberOfStopBits;
+
+/**
+ *  The number of data bits. Values other than 5, 6, 7, or 8 are ignored.
+ */
+@property (nonatomic) NSUInteger numberOfDataBits;
 
 /**
  *
@@ -431,6 +558,8 @@ typedef NS_ENUM(NSUInteger, ORSSerialPortParity) {
 
 @end
 
+NS_ASSUME_NONNULL_END
+
 /**
  *  The ORSSerialPortDelegate protocol defines methods to be implemented
  *  by the delegate of an `ORSSerialPort` object.
@@ -440,7 +569,9 @@ typedef NS_ENUM(NSUInteger, ORSSerialPortParity) {
  *  to a background queue in your implementation of the delegate method.
  */
 
-@protocol ORSSerialPortDelegate
+NS_ASSUME_NONNULL_BEGIN
+
+@protocol ORSSerialPortDelegate <NSObject>
 
 @required
 
@@ -454,7 +585,7 @@ typedef NS_ENUM(NSUInteger, ORSSerialPortParity) {
  *
  *  @param serialPort The `ORSSerialPort` instance representing the port that was removed.
  */
-- (void)serialPortWasRemovedFromSystem:(ORSSerialPort *)serialPort;
+- (void)serialPortWasRemovedFromSystem:(ORSSerialPort *)serialPort NS_SWIFT_NAME(serialPortWasRemovedFromSystem(_:));
 
 @optional
 
@@ -465,6 +596,16 @@ typedef NS_ENUM(NSUInteger, ORSSerialPortParity) {
  *  @param data       An `NSData` instance containing the data received.
  */
 - (void)serialPort:(ORSSerialPort *)serialPort didReceiveData:(NSData *)data;
+
+/**
+ *  Called when a valid, complete packet matching a descriptor installed with 
+ *  -startListeningForPacketsMatchingDescriptor: is received.
+ *
+ *  @param serialPort		The `ORSSerialPort` instance representing the port that received `packetData`.
+ *  @param packetData		The An `NSData` instance containing the received packet data.
+ *  @param descriptor		The packet descriptor object for which packetData is a match.
+ */
+- (void)serialPort:(ORSSerialPort *)serialPort didReceivePacket:(NSData *)packetData matchingDescriptor:(ORSSerialPacketDescriptor *)descriptor;
 
 /**
  *  Called when a valid, complete response is received for a previously sent request.
@@ -516,8 +657,15 @@ typedef NS_ENUM(NSUInteger, ORSSerialPortParity) {
 /**
  *  Called when a serial port was closed (e.g. because `-close`) was called.
  *
+ *  When an ORSSerialPort instance is closed, its queued requests are cancelled, and
+ *  its pending request is discarded. This is done _after_ the call to `-serialPortWasClosed:`.
+ *  If upon later reopening you may need to resend those requests, you 
+ *  should retrieve and store them in your implementation of this method.
+ *
  *  @param serialPort The `ORSSerialPort` instance representing the port that was closed.
  */
 - (void)serialPortWasClosed:(ORSSerialPort *)serialPort;
 
 @end
+
+NS_ASSUME_NONNULL_END

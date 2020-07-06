@@ -25,19 +25,24 @@
 //	SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
 #if !__has_feature(objc_arc)
-	#error ORSSerialPortManager.m must be compiled with ARC. Either turn on ARC for the project or set the -fobjc-arc flag for ORSSerialPortManager.m in the Build Phases for this target
+#error ORSSerialPortManager.m must be compiled with ARC. Either turn on ARC for the project or set the -fobjc-arc flag for ORSSerialPortManager.m in the Build Phases for this target
 #endif
 
 #import "ORSSerialPortManager.h"
 #import "ORSSerialPort.h"
 
+#ifdef ORSSERIAL_FRAMEWORK
+// To enable sleep/wake notifications, etc.
+#import <Cocoa/Cocoa.h>
+#endif
+
 #import <IOKit/IOKitLib.h>
 #import <IOKit/serial/IOSerialKeys.h>
 
 #ifdef LOG_SERIAL_PORT_ERRORS
-	#define LOG_SERIAL_PORT_ERROR(fmt, ...) NSLog(fmt, ##__VA_ARGS__)
+#define LOG_SERIAL_PORT_ERROR(fmt, ...) NSLog(fmt, ##__VA_ARGS__)
 #else
-	#define LOG_SERIAL_PORT_ERROR(fmt, ...)
+#define LOG_SERIAL_PORT_ERROR(fmt, ...)
 #endif
 
 NSString * const ORSSerialPortsWereConnectedNotification = @"ORSSerialPortWasConnectedNotification";
@@ -53,6 +58,7 @@ void ORSSerialPortManagerPortsTerminatedNotificationCallback(void *refCon, io_it
 
 @property (nonatomic, copy, readwrite) NSArray *availablePorts;
 @property (nonatomic, strong) NSMutableArray *portsToReopenAfterSleep;
+@property (nonatomic, strong) id terminationObserver;
 
 @property (nonatomic) io_iterator_t portPublishedNotificationIterator;
 @property (nonatomic) io_iterator_t portTerminatedNotificationIterator;
@@ -107,7 +113,11 @@ static ORSSerialPortManager *sharedInstance = nil;
 {
 	NSNotificationCenter *nc = [NSNotificationCenter defaultCenter];
 	[nc removeObserver:self];
-	
+#ifdef NSAppKitVersionNumber10_0
+	NSNotificationCenter *wsnc = [[NSWorkspace sharedWorkspace] notificationCenter];
+	[wsnc removeObserver:self];
+	if (self.terminationObserver) [nc removeObserver:self.terminationObserver];
+#endif
 	// Stop IOKit notifications for ports being added/removed
 	IOObjectRelease(_portPublishedNotificationIterator);
 	_portPublishedNotificationIterator = 0;
@@ -120,22 +130,19 @@ static ORSSerialPortManager *sharedInstance = nil;
 	// register for notifications (only if AppKit is available)
 	void (^terminationBlock)(void) = ^{
 		for (ORSSerialPort *eachPort in self.availablePorts) [eachPort cleanupAfterSystemRemoval];
-		self.availablePorts = nil;
+		self.availablePorts = @[];
 	};
 	
 #ifdef NSAppKitVersionNumber10_0
 	NSNotificationCenter *nc = [NSNotificationCenter defaultCenter];
-	[nc addObserverForName:NSApplicationWillTerminateNotification
-					object:nil
-					 queue:nil
-				usingBlock:^(NSNotification *notification){
-					// For some unknown reason, this notification fires twice,
-					// doesn't cause a problem right now, but be aware
-					terminationBlock();
-				}];
+	self.terminationObserver = [nc addObserverForName:NSApplicationWillTerminateNotification
+											   object:nil
+												queue:nil
+										   usingBlock:^(NSNotification *notification){ terminationBlock(); }];
 	
-	[nc addObserver:self selector:@selector(systemWillSleep:) name:NSWorkspaceWillSleepNotification object:NULL];
-	[nc addObserver:self selector:@selector(systemDidWake:) name:NSWorkspaceDidWakeNotification object:NULL];
+	NSNotificationCenter *wsnc = [[NSWorkspace sharedWorkspace] notificationCenter];
+	[wsnc addObserver:self selector:@selector(systemWillSleep:) name:NSWorkspaceWillSleepNotification object:NULL];
+	[wsnc addObserver:self selector:@selector(systemDidWake:) name:NSWorkspaceDidWakeNotification object:NULL];
 #else
 	// If AppKit isn't available, as in a Foundation command-line tool, cleanup upon exit. Sleep/wake
 	// notifications don't seem to be available without NSWorkspace.
@@ -273,8 +280,10 @@ static ORSSerialPortManager *sharedInstance = nil;
 	
 	self.portTerminatedNotificationIterator = portIterator;
 	IOObjectRelease(portIterator);
-	
-	while (IOIteratorNext(self.portTerminatedNotificationIterator)) {}; // Run out the iterator or notifications won't start
+
+	io_object_t device;
+	// Run out the iterator or notifications won't start
+	while ((device = IOIteratorNext(self.portTerminatedNotificationIterator))) { IOObjectRelease(device); }
 }
 
 #pragma mark - Properties
